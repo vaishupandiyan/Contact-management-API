@@ -1,109 +1,245 @@
-const STORAGE_KEY = 'localContactsDB';
-const form = document.getElementById('contact-form');
-const contactListDiv = document.getElementById('contact-list');
-const submitBtn = document.getElementById('submit-btn');
-const clearFormBtn = document.getElementById('clear-form-btn');
-const contactIdInput = document.getElementById('contact-id');
+// app.js - linked from index.html
+(() => {
+  const STORAGE_KEY = 'contacts_v1';
+  let contacts = [];
 
-// --- "JSON" Database Layer (using localStorage) ---
+  // DOM refs
+  const contactForm = document.getElementById('contactForm');
+  const contactIdInput = document.getElementById('contactId');
+  const nameInput = document.getElementById('name');
+  const phoneInput = document.getElementById('phone');
+  const emailInput = document.getElementById('email');
+  const companyInput = document.getElementById('company');
+  const saveBtn = document.getElementById('saveBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const contactsTbody = document.getElementById('contactsTbody');
+  const countDisplay = document.getElementById('countDisplay');
 
-// CREATE/READ: Get contacts from localStorage or initialize an empty array
-function getContacts() {
-    const contactsString = localStorage.getItem(STORAGE_KEY);
-    // JSON.parse converts the JSON string back to a JavaScript object/array
-    return contactsString ? JSON.parse(contactsString) : [];
-}
+  const searchInput = document.getElementById('searchInput');
+  const clearSearch = document.getElementById('clearSearch');
 
-// UPDATE: Save the entire contacts array back to localStorage
-function saveContacts(contacts) {
-    // JSON.stringify converts the JavaScript object/array to a JSON string
+  const exportBtn = document.getElementById('exportBtn');
+  const importBtn = document.getElementById('importBtn');
+  const importFile = document.getElementById('importFile');
+  const clearAllBtn = document.getElementById('clearAllBtn');
+
+  // utils
+  function saveToStorage() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(contacts));
-}
+  }
 
-// --- RESTful Operations (CRUD) ---
-
-// CREATE/UPDATE
-function saveContact(name, phone, email, id = null) {
-    const contacts = getContacts();
-    if (id) {
-        // UPDATE
-        const index = contacts.findIndex(c => c.id == id);
-        if (index !== -1) {
-            contacts[index] = { id: id, name, phone, email };
-        }
-    } else {
-        // CREATE
-        const newId = Date.now(); // Simple unique ID
-        contacts.push({ id: newId, name, phone, email });
+  function loadFromStorage() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      contacts = raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      contacts = [];
+      console.error('Failed to parse contacts from storage', e);
     }
-    saveContacts(contacts);
-    renderContacts();
-    form.reset();
-    resetFormState();
-}
+  }
 
-// DELETE
-function deleteContact(id) {
-    let contacts = getContacts();
-    contacts = contacts.filter(c => c.id != id);
-    saveContacts(contacts);
-    renderContacts();
-}
+  function uid() {
+    // simple unique id
+    return 'c_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8);
+  }
 
-// READ (Render All)
-function renderContacts() {
-    const contacts = getContacts();
-    contactListDiv.innerHTML = ''; // Clear existing list
+  function sanitize(s) {
+    return String(s ?? '').trim();
+  }
 
-    if (contacts.length === 0) {
-        contactListDiv.innerHTML = '<p>No contacts found.</p>';
-        return;
+  // rendering
+  function render(filter = '') {
+    const q = sanitize(filter).toLowerCase();
+    contactsTbody.innerHTML = '';
+
+    const list = contacts
+      .slice()
+      .sort((a,b) => a.name.localeCompare(b.name))
+      .filter(c => {
+        if (!q) return true;
+        return (c.name + ' ' + (c.phone||'') + ' ' + (c.email||'') + ' ' + (c.company||''))
+          .toLowerCase()
+          .includes(q);
+      });
+
+    for (const c of list) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><strong>${escapeHtml(c.name)}</strong></td>
+        <td>${escapeHtml(c.phone)}</td>
+        <td>${escapeHtml(c.email || '')}</td>
+        <td>${escapeHtml(c.company || '')}</td>
+        <td class="actions">
+          <button data-action="edit" data-id="${c.id}" class="small">Edit</button>
+          <button data-action="delete" data-id="${c.id}" class="small">Delete</button>
+        </td>
+      `;
+      contactsTbody.appendChild(tr);
     }
 
-    contacts.forEach(contact => {
-        const div = document.createElement('div');
-        div.innerHTML = `
-            <strong>${contact.name}</strong> (${contact.phone}, ${contact.email})
-            <button onclick="editContact('${contact.id}')">Edit</button>
-            <button onclick="deleteContact('${contact.id}')">Delete</button>
-        `;
-        contactListDiv.appendChild(div);
-    });
-}
+    countDisplay.textContent = `${list.length} contact${list.length !== 1 ? 's' : ''}`;
+  }
 
-// Additional function for editing (pre-populates the form)
-function editContact(id) {
-    const contacts = getContacts();
-    const contact = contacts.find(c => c.id == id);
+  function escapeHtml(text) {
+    return text
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+  }
 
-    if (contact) {
-        document.getElementById('name').value = contact.name;
-        document.getElementById('phone').value = contact.phone;
-        document.getElementById('email').value = contact.email;
-        contactIdInput.value = contact.id;
-        submitBtn.textContent = 'Update Contact';
-    }
-}
-
-function resetFormState() {
+  // form actions
+  function resetForm() {
     contactIdInput.value = '';
-    submitBtn.textContent = 'Add Contact';
-    form.reset();
-}
+    contactForm.reset();
+    saveBtn.textContent = 'Save Contact';
+  }
 
-// --- Event Listeners ---
+  function validateForm() {
+    const name = sanitize(nameInput.value);
+    const phone = sanitize(phoneInput.value);
+    if (!name) throw new Error('Name is required.');
+    if (!phone) throw new Error('Phone is required.');
+    // basic phone validation (loose)
+    if (phone.length < 6) throw new Error('Phone number seems too short.');
+    return { name, phone, email: sanitize(emailInput.value), company: sanitize(companyInput.value) };
+  }
 
-form.addEventListener('submit', function(e) {
+  function addContact(data) {
+    const newContact = {
+      id: uid(),
+      createdAt: new Date().toISOString(),
+      ...data
+    };
+    contacts.push(newContact);
+    saveToStorage();
+    render(searchInput.value);
+    resetForm();
+  }
+
+  function updateContact(id, data) {
+    const idx = contacts.findIndex(c => c.id === id);
+    if (idx === -1) throw new Error('Contact not found.');
+    contacts[idx] = { ...contacts[idx], ...data, updatedAt: new Date().toISOString() };
+    saveToStorage();
+    render(searchInput.value);
+    resetForm();
+  }
+
+  function deleteContact(id) {
+    if (!confirm('Delete this contact?')) return;
+    contacts = contacts.filter(c => c.id !== id);
+    saveToStorage();
+    render(searchInput.value);
+  }
+
+  function editContact(id) {
+    const c = contacts.find(x => x.id === id);
+    if (!c) return alert('Contact not found');
+    contactIdInput.value = c.id;
+    nameInput.value = c.name;
+    phoneInput.value = c.phone;
+    emailInput.value = c.email || '';
+    companyInput.value = c.company || '';
+    saveBtn.textContent = 'Update Contact';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // event listeners
+  contactForm.addEventListener('submit', (e) => {
     e.preventDefault();
-    const name = document.getElementById('name').value;
-    const phone = document.getElementById('phone').value;
-    const email = document.getElementById('email').value;
-    const id = contactIdInput.value || null;
+    try {
+      const data = validateForm();
+      const id = contactIdInput.value;
+      if (id) {
+        updateContact(id, data);
+      } else {
+        addContact(data);
+      }
+    } catch (err) {
+      alert(err.message || 'Validation failed');
+    }
+  });
 
-    saveContact(name, phone, email, id);
-});
+  resetBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    resetForm();
+  });
 
-clearFormBtn.addEventListener('click', resetFormState);
+  contactsTbody.addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+    if (action === 'edit') editContact(id);
+    if (action === 'delete') deleteContact(id);
+  });
 
-// Initial load
-document.addEventListener('DOMContentLoaded', renderContacts);
+  searchInput.addEventListener('input', () => render(searchInput.value));
+  clearSearch.addEventListener('click', () => { searchInput.value = ''; render(''); });
+
+  // export / import
+  exportBtn.addEventListener('click', () => {
+    const dataStr = JSON.stringify(contacts, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `contacts-${(new Date()).toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  importBtn.addEventListener('click', () => importFile.click());
+  importFile.addEventListener('change', async (ev) => {
+    const file = ev.target.files?.[0];
+    if (!file) return;
+    if (!confirm('Importing will append contacts from the file. Duplicate detection is naive (by phone). Continue?')) {
+      importFile.value = '';
+      return;
+    }
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!Array.isArray(parsed)) throw new Error('JSON must be an array of contacts.');
+      // simple merge: if phone exists, skip
+      const existingPhones = new Set(contacts.map(c => c.phone));
+      let added = 0;
+      for (const item of parsed) {
+        const name = sanitize(item.name || item.fullName || '');
+        const phone = sanitize(item.phone || item.mobile || '');
+        if (!name || !phone) continue;
+        if (existingPhones.has(phone)) continue;
+        contacts.push({
+          id: uid(),
+          createdAt: new Date().toISOString(),
+          name, phone,
+          email: sanitize(item.email || ''),
+          company: sanitize(item.company || item.note || '')
+        });
+        existingPhones.add(phone);
+        added++;
+      }
+      saveToStorage();
+      render(searchInput.value);
+      alert(`Imported ${added} new contact${added !== 1 ? 's' : ''}.`);
+    } catch (err) {
+      alert('Import failed: ' + (err.message || err));
+    } finally {
+      importFile.value = '';
+    }
+  });
+
+  clearAllBtn.addEventListener('click', () => {
+    if (!confirm('This will permanently delete ALL contacts from this browser. Continue?')) return;
+    contacts = [];
+    saveToStorage();
+    render();
+  });
+
+  // init
+  loadFromStorage();
+  render();
+
+})();
