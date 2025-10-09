@@ -1,36 +1,328 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Contact Management (Local Storage)</title>
-    <style>
-        /* Simple styling for readability */
-        body { font-family: sans-serif; }
-        .contact-list div { padding: 5px; border-bottom: 1px solid #ccc; margin-bottom: 5px; }
-        .contact-list button { margin-left: 10px; }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Contact Manager (single-file, localStorage safe)</title>
+  <style>
+    body { font-family: system-ui, Roboto, "Segoe UI", Arial; max-width:1000px; margin:20px auto; padding:0 16px; color:#111; }
+    .card { border:1px solid #e6e6e6; border-radius:8px; padding:12px; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,0.03); }
+    form { display:grid; grid-template-columns: 1fr 1fr; gap:8px; align-items:center; }
+    input, button { padding:8px; border-radius:6px; border:1px solid #ccc; font-size:14px; }
+    button.primary { background:#0066ff; color:#fff; border-color:#0051d4; }
+    .full { grid-column:1 / -1; display:flex; justify-content:flex-end; gap:8px; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; }
+    th, td { text-align:left; padding:8px; border-bottom:1px solid #f0f0f0; font-size:14px; }
+    .note { margin-top:8px; color:#555; font-size:13px; }
+    @media (max-width:720px) { form { grid-template-columns: 1fr; } }
+    .status { font-size:13px; margin-bottom:8px; color:#333; }
+  </style>
 </head>
 <body>
-    <h1>Contact Manager</h1>
+  <h2>Contact Manager</h2>
+  <div id="storageStatus" class="status"></div>
 
-    <form id="contact-form">
-        <input type="hidden" id="contact-id">
-        <label for="name">Name:</label>
-        <input type="text" id="name" required><br><br>
-        <label for="phone">Phone:</label>
-        <input type="tel" id="phone" required><br><br>
-        <label for="email">Email:</label>
-        <input type="email" id="email" required><br><br>
-        <button type="submit" id="submit-btn">Add Contact</button>
-        <button type="button" id="clear-form-btn">Clear Form</button>
+  <section class="card" aria-labelledby="formTitle">
+    <form id="contactForm" autocomplete="off">
+      <input type="hidden" id="contactId" />
+
+      <div>
+        <label for="name">Name *</label><br/>
+        <input id="name" type="text" placeholder="Full name" required />
+      </div>
+
+      <div>
+        <label for="phone">Phone *</label><br/>
+        <input id="phone" type="tel" placeholder="+91 9876543210" required />
+      </div>
+
+      <div>
+        <label for="email">Email</label><br/>
+        <input id="email" type="email" placeholder="name@example.com" />
+      </div>
+
+      <div>
+        <label for="company">Company / Note</label><br/>
+        <input id="company" type="text" placeholder="Company or note" />
+      </div>
+
+      <div class="full">
+        <button type="submit" id="saveBtn" class="primary">Save Contact</button>
+        <button type="button" id="resetBtn">Reset</button>
+      </div>
     </form>
 
-    <hr>
+    <div style="margin-top:10px;">
+      <button id="exportBtn">Export JSON</button>
+      <button id="importBtn">Import JSON</button>
+      <input id="importFile" type="file" accept="application/json" style="display:none" />
+      <button id="clearAllBtn">Clear All</button>
+    </div>
 
-    <h2>Contact List</h2>
-    <div id="contact-list" class="contact-list">
-        </div>
+    <div class="note">Contacts are stored in your browser's localStorage (if available). If localStorage is unavailable, contacts will not persist between sessions.</div>
+  </section>
 
-    <script src="app.js"></script>
+  <section style="margin-top:14px;">
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <strong>Contacts</strong>
+        <div id="countDisplay">0 contacts</div>
+      </div>
+
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Phone</th><th>Email</th><th>Company/Note</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="contactsTbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+<script>
+(() => {
+  const STORAGE_KEY = 'contacts_v1';
+  let contacts = [];
+  let localStorageOk = checkLocalStorage();
+
+  // DOM refs
+  const contactForm = document.getElementById('contactForm');
+  const contactIdInput = document.getElementById('contactId');
+  const nameInput = document.getElementById('name');
+  const phoneInput = document.getElementById('phone');
+  const emailInput = document.getElementById('email');
+  const companyInput = document.getElementById('company');
+  const saveBtn = document.getElementById('saveBtn');
+  const resetBtn = document.getElementById('resetBtn');
+
+  const contactsTbody = document.getElementById('contactsTbody');
+  const countDisplay = document.getElementById('countDisplay');
+  const storageStatus = document.getElementById('storageStatus');
+
+  const exportBtn = document.getElementById('exportBtn');
+  const importBtn = document.getElementById('importBtn');
+  const importFile = document.getElementById('importFile');
+  const clearAllBtn = document.getElementById('clearAllBtn');
+
+  function checkLocalStorage() {
+    try {
+      const testKey = '__ls_test__';
+      localStorage.setItem(testKey, testKey);
+      localStorage.removeItem(testKey);
+      return true;
+    } catch (e) {
+      console.warn('localStorage unavailable:', e);
+      return false;
+    }
+  }
+
+  function updateStorageStatus() {
+    storageStatus.textContent = localStorageOk
+      ? 'localStorage: available — contacts will persist.'
+      : 'localStorage: unavailable/blocked — contacts will NOT persist after closing the browser.';
+  }
+
+  function saveToStorage() {
+    if (!localStorageOk) return false;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(contacts));
+      return true;
+    } catch (e) {
+      console.error('Failed to write to localStorage:', e);
+      localStorageOk = false;
+      updateStorageStatus();
+      return false;
+    }
+  }
+
+  function loadFromStorage() {
+    if (!localStorageOk) {
+      contacts = [];
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      contacts = raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      console.error('Failed to load contacts from storage:', e);
+      contacts = [];
+      localStorageOk = false;
+      updateStorageStatus();
+    }
+  }
+
+  function uid() {
+    return 'c_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8);
+  }
+
+  function sanitize(s) {
+    return String(s ?? '').trim();
+  }
+
+  function escapeHtml(s) {
+    // safe for older browsers (avoid replaceAll)
+    return String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function render(filter = '') {
+    const q = sanitize(filter).toLowerCase();
+    contactsTbody.innerHTML = '';
+    const list = contacts.slice().sort((a,b) => (a.name||'').localeCompare(b.name||''));
+    const filtered = q ? list.filter(c => ( (c.name||'') + ' ' + (c.phone||'') + ' ' + (c.email||'') + ' ' + (c.company||'') ).toLowerCase().includes(q) ) : list;
+
+    for (const c of filtered) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><strong>${escapeHtml(c.name)}</strong></td>
+        <td>${escapeHtml(c.phone)}</td>
+        <td>${escapeHtml(c.email||'')}</td>
+        <td>${escapeHtml(c.company||'')}</td>
+        <td>
+          <button data-action="edit" data-id="${c.id}">Edit</button>
+          <button data-action="delete" data-id="${c.id}">Delete</button>
+        </td>
+      `;
+      contactsTbody.appendChild(tr);
+    }
+    countDisplay.textContent = `${filtered.length} contact${filtered.length !== 1 ? 's' : ''}`;
+  }
+
+  function resetForm() {
+    contactIdInput.value = '';
+    contactForm.reset();
+    saveBtn.textContent = 'Save Contact';
+  }
+
+  function validateForm() {
+    const name = sanitize(nameInput.value);
+    const phone = sanitize(phoneInput.value);
+    if (!name) throw new Error('Name required');
+    if (!phone) throw new Error('Phone required');
+    if (phone.length < 5) throw new Error('Phone seems too short');
+    return { name, phone, email: sanitize(emailInput.value), company: sanitize(companyInput.value) };
+  }
+
+  function addContact(data) {
+    const newContact = { id: uid(), createdAt: new Date().toISOString(), ...data };
+    contacts.push(newContact);
+    const ok = saveToStorage();
+    console.log('addContact saved:', ok, newContact);
+    render();
+    resetForm();
+  }
+
+  function updateContact(id, data) {
+    const idx = contacts.findIndex(c => c.id === id);
+    if (idx === -1) throw new Error('Not found');
+    contacts[idx] = { ...contacts[idx], ...data, updatedAt: new Date().toISOString() };
+    const ok = saveToStorage();
+    console.log('updateContact saved:', ok, contacts[idx]);
+    render();
+    resetForm();
+  }
+
+  function deleteContact(id) {
+    if (!confirm('Delete this contact?')) return;
+    contacts = contacts.filter(c => c.id !== id);
+    const ok = saveToStorage();
+    console.log('deleteContact saved:', ok, id);
+    render();
+  }
+
+  function editContact(id) {
+    const c = contacts.find(x => x.id === id);
+    if (!c) return alert('Contact not found');
+    contactIdInput.value = c.id;
+    nameInput.value = c.name || '';
+    phoneInput.value = c.phone || '';
+    emailInput.value = c.email || '';
+    companyInput.value = c.company || '';
+    saveBtn.textContent = 'Update Contact';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // event listeners
+  contactForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    try {
+      const data = validateForm();
+      const id = contactIdInput.value;
+      if (id) updateContact(id, data); else addContact(data);
+    } catch (err) {
+      alert(err.message || 'Validation error');
+    }
+  });
+
+  resetBtn.addEventListener('click', (e) => { e.preventDefault(); resetForm(); });
+
+  contactsTbody.addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+    if (action === 'edit') editContact(id);
+    if (action === 'delete') deleteContact(id);
+  });
+
+  exportBtn.addEventListener('click', () => {
+    const dataStr = JSON.stringify(contacts, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `contacts-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+  });
+
+  importBtn.addEventListener('click', () => importFile.click());
+  importFile.addEventListener('change', async (ev) => {
+    const file = ev.target.files?.[0];
+    if (!file) return;
+    if (!confirm('Importing will append contacts (duplicates by phone are skipped). Continue?')) { importFile.value=''; return; }
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!Array.isArray(parsed)) throw new Error('Expected an array');
+      const existingPhones = new Set(contacts.map(c => c.phone));
+      let added = 0;
+      for (const item of parsed) {
+        const name = sanitize(item.name || '');
+        const phone = sanitize(item.phone || '');
+        if (!name || !phone) continue;
+        if (existingPhones.has(phone)) continue;
+        contacts.push({ id: uid(), createdAt: new Date().toISOString(), name, phone, email: sanitize(item.email||''), company: sanitize(item.company||'') });
+        existingPhones.add(phone);
+        added++;
+      }
+      saveToStorage();
+      render();
+      alert('Imported ' + added + ' new contact' + (added !== 1 ? 's' : ''));
+    } catch (err) {
+      alert('Import failed: ' + (err.message || err));
+    } finally { importFile.value = ''; }
+  });
+
+  clearAllBtn.addEventListener('click', () => {
+    if (!confirm('Permanently delete ALL contacts?')) return;
+    contacts = [];
+    saveToStorage();
+    render();
+  });
+
+  // init
+  updateStorageStatus();
+  loadFromStorage();
+  render();
+
+  // Useful debug: if nothing ever saved, print a helpful console message:
+  if (!localStorageOk) {
+    console.info('Note: localStorage not available. Contacts will not persist after closing the browser.');
+  } else {
+    console.info('localStorage available. Contacts persist under key:', STORAGE_KEY);
+  }
+
+})();
+</script>
 </body>
 </html>
